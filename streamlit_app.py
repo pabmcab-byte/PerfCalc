@@ -23,7 +23,6 @@ st.markdown("""
     .mcdu-value-green { color: #00FF00; font-weight: 700; }
     .info-box { color: #FFBF00; background-color: #000; padding: 10px; font-family: 'B612 Mono', monospace; font-size: 13px; border-radius: 5px; border: 1px solid #333; margin-bottom: 10px; }
     
-    /* GRÁFICO DE PISTA AZUL */
     .rwy-container { position: relative; width: 100%; height: 240px; margin-top: 80px; }
     .rwy-asphalt { background-color: #333; height: 60px; width: 100%; position: relative; border: 2px solid #555; }
     .rwy-centerline { position: absolute; top: 50%; left: 35px; right: 35px; border-top: 2px dashed rgba(255,255,255,0.4); transform: translateY(-50%); }
@@ -66,7 +65,6 @@ input_col, output_col = st.columns([1, 1.2], gap="large")
 
 with input_col:
     st.subheader("Aircraft Configuration")
-    # Cambio a Kilogramos
     weight_kg = st.number_input("TOW (Kg)", 40000, 80000, 68000, step=100)
     weight_t = weight_kg / 1000
     cg_pct = st.number_input("CG %", 10.0, 45.0, 33.1)
@@ -102,15 +100,20 @@ with input_col:
 
 # 4. CÁLCULO
 weight_lbs = weight_kg * 2.20462
-v1 = int(np.interp(weight_lbs, [100000, 190000], [105, 156]))
-if hw < 0: v1 -= int(abs(hw) * 0.5)
-vr, v2 = v1 + 3, v1 + 7
-f_spd, s_spd = int(np.interp(weight_lbs, [130000, 170000], [142, 163])), int(np.interp(weight_lbs, [130000, 170000], [186, 213]))
 
-# Green Dot / Clean Speed (O)
+# V1 penalizada por TO SHIFT
+v1_base = np.interp(weight_lbs, [100000, 190000], [105, 156])
+v1 = int(v1_base - (to_shift_m * 0.012)) 
+if hw < 0: v1 -= int(abs(hw) * 0.5)
+
+vr = int(np.interp(weight_lbs, [100000, 190000], [108, 159]))
+v2 = vr + 4
+f_spd, s_spd = int(np.interp(weight_lbs, [130000, 170000], [142, 163])), int(np.interp(weight_lbs, [130000, 170000], [186, 213]))
 green_dot = int((2 * weight_t) + 85)
 
+# FLEX penalizado por TO SHIFT (Mayor Shift = Menor Temperatura FLEX permitida)
 flex = int(259 - (3.333 * weight_t))
+flex -= int(to_shift_m / 100) # Penalización de 1º cada 100m
 if packs == "ON": flex -= 3
 if anti_ice == "ON": flex -= 5
 flex_final = max(flex, int(oat))
@@ -133,7 +136,10 @@ with output_col:
     # 6. GRÁFICO DINÁMICO
     d_lo = 1600 * (weight_t / 68.0)**2
     v_lo = vr + 5
-    p1, pr, p2 = ((v1/v_lo)**2 * d_lo / l_m) * 100, ((vr/v_lo)**2 * d_lo / l_m) * 100, (d_lo / l_m) * 100
+    shift_p = (to_shift_m / l_m) * 100
+    p1 = shift_p + (((v1/v_lo)**2 * d_lo / l_m) * 100)
+    pr = shift_p + (((vr/v_lo)**2 * d_lo / l_m) * 100)
+    p2 = shift_p + ((d_lo / l_m) * 100)
 
     rwy_html = f"""
     <div class="rwy-container">
@@ -153,9 +159,6 @@ with output_col:
                 <div class="v-tag" style="top: -20px;">V2</div>
                 <div class="dist-tag" style="bottom: -50px;">{int(p2*l_m/100)}m</div>
             </div>
-        </div>
-        <div style="display: flex; justify-content: space-between; font-size: 10px; color: #888; margin-top: 15px;">
-            <span>START (0m)</span><span>END ({l_m}m)</span>
         </div>
     </div>
     """
