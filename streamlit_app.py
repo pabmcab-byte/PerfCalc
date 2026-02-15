@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 # 1. CONFIGURACIÓN Y ESTILOS
-st.set_page_config(page_title="PerfCalc A320 Ultra", layout="wide")
+st.set_page_config(page_title="PerfCalc", layout="wide")
 
 st.markdown("""
     <style>
