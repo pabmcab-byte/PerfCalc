@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 # 1. CONFIGURACIÓN Y ESTILOS
-st.set_page_config(page_title="PerfCalc Ultra Pro v16.1", layout="wide")
+st.set_page_config(page_title="PerfCalc Ultra Pro v16.4", layout="wide")
 
 st.markdown("""
     <style>
@@ -31,9 +31,8 @@ st.markdown("""
     .mcdu-title-white { color: #FFFFFF; font-size: 24px; font-weight: 700; text-align: center; margin-bottom: 30px; }
     
     .info-box { color: #FFBF00; background-color: #000; padding: 10px; font-family: 'B612 Mono', monospace; font-size: 12px; border: 1px solid #333; margin-bottom: 15px; }
-    .density-alert { color: #FF4B4B; border: 1px solid #FF4B4B; padding: 5px; font-size: 10px; margin-top: 5px; text-align: center; }
 
-    /* GRÁFICO */
+    /* GRÁFICO DINÁMICO */
     .rwy-container { position: relative; width: 100%; height: 280px; margin-top: 60px; }
     .rwy-asphalt { background-color: #222; height: 60px; width: 100%; position: relative; border: 2px solid #555; z-index: 5; box-shadow: inset 0 0 20px #000; }
     .rwy-centerline { position: absolute; top: 50%; left: 60px; right: 60px; border-top: 2px dashed rgba(255,255,255,0.4); transform: translateY(-50%); }
@@ -46,7 +45,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. LOADERS
+# 2. CORE HELPERS
 @st.cache_data
 def load_db():
     return pd.read_csv("https://davidmegginson.github.io/ourairports-data/runways.csv").dropna(subset=['le_ident'])
@@ -62,10 +61,9 @@ def get_reciprocal(rwy):
     if not rwy or rwy == "---": return "---"
     num = ''.join(filter(str.isdigit, rwy)); let = ''.join(filter(str.isalpha, rwy)).upper()
     opp_num = str(((int(num) + 18 - 1) % 36) + 1).zfill(2)
-    mapping = {"L": "R", "R": "L", "C": "C", "": ""}
-    return f"{opp_num}{mapping.get(let, '')}"
+    mapping = {"L": "R", "R": "L", "C": "C", "": ""}; return f"{opp_num}{mapping.get(let, '')}"
 
-# 3. HEADER & PHASE
+# 3. HEADER & SELECTOR
 st.markdown('<div class="app-title">PerfCalc</div>', unsafe_allow_html=True)
 if 'phase' not in st.session_state: st.session_state.phase = "TAKEOFF"
 
@@ -78,77 +76,69 @@ with nav_c2:
 st.markdown(f"<style>#btn_to {{ {'background-color: #00FFFF; color: black;' if st.session_state.phase == 'TAKEOFF' else ''} }} #btn_ld {{ {'background-color: #00FFFF; color: black;' if st.session_state.phase == 'LANDING' else ''} }}</style>", unsafe_allow_html=True)
 mode = st.session_state.phase
 
-# 4. INPUTS
+# 4. INPUTS (SISTEMAS REINTEGRADOS)
 input_col, output_col = st.columns([1, 1.2], gap="large")
 
 with input_col:
     st.subheader(f"{mode} Configuration")
     weight_kg = st.number_input("Weight (Kg)", 40000, 80000, 68000, step=100)
-    w_lbs_k = (weight_kg * 2.20462) / 1000
     
     if mode == "TAKEOFF":
         cg_pct = st.number_input("CG %", 10.0, 45.0, 33.1)
         to_shift = st.number_input("TO SHIFT (m)", 0, 1000, 0, step=10)
         c1, c2 = st.columns(2); fl_sel = c1.selectbox("FLAPS", ["1+F", "2", "3"]); cond = c2.selectbox("RWY COND", ["DRY", "WET"])
+        s1, s2 = st.columns(2); packs = s1.radio("PACKS", ["OFF", "ON"], horizontal=True); ai = s2.radio("ANTI-ICE", ["OFF", "ON"], horizontal=True)
     else:
         c1, c2 = st.columns(2); fl_sel = c1.selectbox("LDG FLAPS", ["FULL", "CONF 3"]); ab_sel = c2.selectbox("AUTOBRAKE", ["AUTO", "LO", "MED", "MAX"])
         r_cond = st.selectbox("RWY COND", ["DRY", "WET", "CONTAMINATED"])
-        rev = st.radio("REVERSERS", ["OFF", "ON"], horizontal=True)
+        s1, s2, s3 = st.columns(3); packs = s1.radio("PACKS", ["OFF", "ON"], horizontal=True); ai = s2.radio("ANTI-ICE", ["OFF", "ON"], horizontal=True); rev = s3.radio("REVERSERS", ["OFF", "ON"], horizontal=True)
 
     st.divider()
     col_icao, col_rwy = st.columns([0.6, 0.4])
     icao = col_icao.text_input("ICAO AIRPORT", "LEZL").upper()
     metar = get_metar(icao); oat, hw, l_m, pista_sel, rwy_recip, elev_p, qnh = 15, 0, 2500, "---", "---", 0, 1013
-    
     if metar:
-        oat = float(metar.get('temperature', {}).get('celsius', 15))
-        qnh = float(metar.get('barometer', {}).get('hpa', 1013))
+        oat = float(metar.get('temperature', {}).get('celsius', 15)); qnh = float(metar.get('barometer', {}).get('hpa', 1013))
         w_dir, w_spd = metar.get('wind', {}).get('degrees', 0), metar.get('wind', {}).get('speed_kts', 0)
         ae = load_db()[load_db()['airport_ident'] == icao]
         if not ae.empty:
             p_list = pd.concat([ae[['le_ident','length_ft','le_elevation_ft','he_elevation_ft']].rename(columns={'le_ident':'p','le_elevation_ft':'e_s','he_elevation_ft':'e_e'}), ae[['he_ident','length_ft','he_elevation_ft','le_elevation_ft']].rename(columns={'he_ident':'p','he_elevation_ft':'e_s','le_elevation_ft':'e_e'})]).drop_duplicates()
             pista_sel = col_rwy.selectbox("RUNWAY", p_list['p'].tolist())
             row = p_list[p_list['p'] == pista_sel].iloc[0]; l_m, elev_p = int(row['length_ft']*0.3048), int(row['e_s'])
-            hw = int(w_spd * math.cos(math.radians(w_dir - (int('0'+''.join(filter(str.isdigit, pista_sel)))*10))))
+            hw = int(w_spd * math.cos(math.radians(w_dir - int('0'+''.join(filter(str.isdigit, pista_sel)))*10)))
             rwy_recip = get_reciprocal(pista_sel)
-        
-        pres_alt = elev_p + (1013 - qnh) * 27
-        isa_t = 15 - (elev_p / 1000 * 2)
-        dens_alt = pres_alt + 120 * (oat - isa_t)
-        st.markdown(f'<div class="info-box">METAR: {metar.get("raw_text")}</div>', unsafe_allow_html=True)
+        pres_alt = elev_p + (1013 - qnh) * 27; isa_t = 15 - (elev_p / 1000 * 2); dens_alt = pres_alt + 120 * (oat - isa_t)
         st.markdown(f'<div class="info-box">LEN: {l_m}m | ELEV: {elev_p}ft | HW: {hw}kt | DA: {int(dens_alt)}ft</div>', unsafe_allow_html=True)
 
-# 5. MOTOR DE FÍSICA BLOQUEADO (LIMITADOR V1 <= VR)
+# 5. MOTOR DE FÍSICA BLOQUEADO (HIGH CONF 3 PENALTY)
 vls_ref_weight = 66000
-vls_ref_speed_ldg = 128 
-vls_ref_speed_to = 124
+vls_ref_speed_ldg, vls_ref_speed_to = 128, 124
 da_factor = 1 + (max(0, dens_alt) / 1000 * 0.01)
+sys_penalty = (3 if packs == "ON" else 0) + (5 if ai == "ON" else 0)
 
 if mode == "TAKEOFF":
     vls_base = vls_ref_speed_to * math.sqrt(weight_kg / vls_ref_weight) * da_factor
     fl_factor = 1.08 if fl_sel == "1+F" else 1.10 if fl_sel == "2" else 1.13
-    
     vr = int(vls_base * 1.08 * fl_factor)
-    # Lógica de Seguridad: V1 nunca puede ser mayor que VR
-    v1_calc = int((vls_base * 1.06 * fl_factor) - (to_shift * 0.02) + (hw * 0.4))
-    v1 = min(v1_calc, vr)
-    
-    v2 = int(vls_base * 1.15 * fl_factor)
-    f_s, s_s, gd_s = int(vls_base * 1.25), int(vls_base * 1.45), int(vls_base * 1.65)
-    flex = min(max(int(255 - (weight_kg/1000 * 3.4) - (to_shift * 0.015) - (dens_alt/1000 * 2)), int(oat)), 65); ths = f"UP{(cg_pct-25)/7.5:.1f}"
+    v1 = min(int((vls_base * 1.06 * fl_factor) - (to_shift * 0.02) + (hw * 0.4)), vr)
+    v2, f_s, s_s, gd_s = int(vls_base * 1.15 * fl_factor), int(vls_base * 1.25), int(vls_base * 1.45), int(vls_base * 1.65)
+    flex = min(max(int(255 - (weight_kg/1000 * 3.4) - (to_shift * 0.015) - (dens_alt/1000 * 2) - sys_penalty), int(oat)), 65)
+    ths = f"UP{(cg_pct-25)/7.5:.1f}"
     accel = (v2**2) / (2 * l_m * 0.65); sh_p = (to_shift / l_m) * 100
     p1, pr, p2 = sh_p + (v1**2/(2*accel*l_m))*100, sh_p + (vr**2/(2*accel*l_m))*100, sh_p + (v2**2/(2*accel*l_m))*100
-    t1, t2, t3 = "V1", "VR", "V2"; d1, d2, d3 = int(v1*12), int(vr*12), int(v2*12)
+    t1, t2, t3, d1, d2, d3 = "V1", "VR", "V2", int(v1*12.2), int(vr*12.2), int(v2*12.2)
 else:
     vls_base = vls_ref_speed_ldg * math.sqrt(weight_kg / vls_ref_weight) * da_factor
-    vls = int(vls_base + (5 if fl_sel == "CONF 3" else 0))
-    hw_corr = max(10, hw) if hw > 0 else 0; vapp = int(min(vls + 20, vls + 5 + (hw_corr / 3))); mini_gs = vapp - max(0, hw)
+    # BLOQUEO CONF 3 REFORZADO: +10kt sobre base FULL
+    vls = int(vls_base + (10 if fl_sel == "CONF 3" else 0))
+    hw_corr = max(10, hw) if hw > 0 else 0
+    vapp = int(min(vls + 20, vls + 5 + (hw_corr / 3))); mini_gs = vapp - max(0, hw)
     dist_b = (weight_kg * 0.019) * (1 - (hw * 0.01)) * (1 + (dens_alt/10000))
     if ab_sel == "AUTO":
         rem = l_m - dist_b; ab_sug, ab_m = ("LO", 1.6) if rem > 800 else ("MED", 1.2) if rem > 300 else ("MAX", 0.9); ab_txt = f"AUTO: {ab_sug}"
     else: ab_m = 1.6 if ab_sel=="LO" else 1.2 if ab_sel=="MED" else 0.9; ab_txt = ab_sel
     dist_t = int(dist_b * ab_m * (0.88 if rev=="ON" else 1.0)); p_act = (dist_t / l_m) * 100
-    p1, pr, p2 = 5, 5+p_act, 5+p_act*1.15; t1, t2, t3 = "TDZ", "STOP", "SAFETY"; d1, d2, d3 = 0, dist_t, int(dist_t*1.15)
+    p1, pr, p2 = 5, 5+p_act, 5+p_act*1.15; t1, t2, t3, d1, d2, d3 = "TDZ", "STOP", "SAFETY", 0, dist_t, int(dist_t*1.15)
 
 # 6. SALIDA MCDU
 with output_col:
